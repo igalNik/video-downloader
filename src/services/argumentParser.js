@@ -1,16 +1,15 @@
+const fs = require("fs");
 const path = require("path");
-const { DEFAULT_CONFIG } = require("../config/constants");
 
 function parseArgs(argv) {
   const args = {
     urls: [],
     file: null,
-    outDir: DEFAULT_CONFIG.outDir,
-    browserExe: DEFAULT_CONFIG.browserExe,
-    discoverTimeout: DEFAULT_CONFIG.discoverTimeout,
-    noBrowser: DEFAULT_CONFIG.noBrowser,
+    outDir: process.cwd(),
+    browserExe: null,
+    discoverTimeout: 15000,
+    noBrowser: false,
   };
-  
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--file" || a === "-f") {
@@ -32,15 +31,16 @@ function parseArgs(argv) {
 
 function* iterUrls({ urls, file }) {
   if (file) {
-    const { readUrlsFromFile } = require("../utils/fileUtils");
-    try {
-      const lines = readUrlsFromFile(file);
-      for (const line of lines) {
-        yield line;
-      }
-    } catch (error) {
-      console.error(`Error: ${error.message}`);
+    const p = path.resolve(file);
+    if (!fs.existsSync(p)) {
+      console.error(`Error: file not found: ${p}`);
       process.exit(1);
+    }
+    const lines = fs.readFileSync(p, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      yield t;
     }
   } else {
     for (const u of urls) {
@@ -50,20 +50,7 @@ function* iterUrls({ urls, file }) {
   }
 }
 
-function printUsage() {
-  console.log("Usage:");
-  console.log("  node src/index.js <url1> <url2> ...");
-  console.log("  node src/index.js --file urls.txt");
-  console.log("  node src/index.js --out downloads --file urls.txt");
-  console.log(
-    '  [optional] --browser-exe "C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"'
-  );
-  console.log("  [optional] --discover-timeout 20000");
-  console.log("  [optional] --no-browser   # skip stage 3");
-}
-
 module.exports = {
   parseArgs,
   iterUrls,
-  printUsage,
 };

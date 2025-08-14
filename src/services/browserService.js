@@ -1,9 +1,13 @@
-const { BROWSER_LAUNCH_OPTIONS, USER_AGENT } = require("../config/constants");
+const {
+  BROWSER_LAUNCH_OPTIONS,
+  USER_AGENT,
+  DEFAULT_BROWSER_TIMEOUT,
+} = require("../config/constants");
 const { isMasterUrl } = require("../utils/formatUtils");
 
 async function findM3u8ViaBrowser(
   originalUrl,
-  { browserExe, timeoutMs = 15000 } = {}
+  { browserExe, timeoutMs = DEFAULT_BROWSER_TIMEOUT } = {}
 ) {
   let puppeteer;
   try {
@@ -23,6 +27,7 @@ async function findM3u8ViaBrowser(
 
   const masters = new Set();
   const others = new Set();
+  let geoBlockingDetected = false;
 
   const consider = (u) => {
     if (!/\.m3u8(\?|$)/i.test(u)) return;
@@ -36,11 +41,35 @@ async function findM3u8ViaBrowser(
       consider(req.url());
     } catch {}
   });
+
   page.on("response", (res) => {
     try {
       const u = res.url();
       const s = res.status();
-      if (s >= 200 && s < 400) consider(u);
+      const headers = res.headers();
+
+      // Check for geo-blocking
+      if (!geoBlockingDetected) {
+        if (s === 403 || s === 451) {
+          geoBlockingDetected = true;
+        }
+
+        if (headers["cf-ray"] || headers["cloudflare"]) {
+          geoBlockingDetected = true;
+        }
+
+        // Check country restrictions
+        const countryCode =
+          headers["x-country-code"] || headers["x-geoip-country"];
+        if (countryCode) {
+          geoBlockingDetected = true;
+        }
+      }
+
+      // Only process successful responses
+      if (s >= 200 && s < 400) {
+        consider(u);
+      }
     } catch {}
   });
 
@@ -49,7 +78,7 @@ async function findM3u8ViaBrowser(
       waitUntil: "domcontentloaded",
       timeout: 30000,
     });
-    const timer = new Promise((r) => setTimeout(r, timeoutMs));
+    const timer = new Promise((resolve) => setTimeout(resolve, timeoutMs));
     await Promise.race([nav.then(() => timer), timer]);
   } catch (e) {
     console.warn(`! Navigation error: ${e}`);
@@ -66,6 +95,9 @@ async function findM3u8ViaBrowser(
     if (list.length > 8) console.log(`  ...(+${list.length - 8} more)`);
   } else {
     console.log("• Browser discovered no .m3u8 candidates.");
+    if (geoBlockingDetected) {
+      console.warn("🌍 Content may be geo-restricted. Try using a VPN.");
+    }
   }
 
   return list;
