@@ -1,24 +1,46 @@
 // step1_basic_download.js
-// Stage 1 with enhancements:
-// - --out <DIR> sets a root output directory.
-// - Each URL is downloaded into its own subdirectory under <DIR>.
-// - Retry with --use-extractors generic if original extraction fails.
-// - Folder names: any non-alphanumeric char replaced with "_".
+// Progressive fallbacks:
+// 1) Try original URL with yt-dlp
+// 2) Retry with --use-extractors generic
+// 3) Open the page in a headless browser (Puppeteer), listen to network,
+//    collect *.m3u8 (masters first), then run yt-dlp on the chosen URL
+//    (NO generic here; we pass --referer <originalUrl>).
+//
+// Also:
+// - --out <DIR> sets a root output directory
+// - Per-URL subdirectory (folder name sanitized; truncation to 250 happens ONLY at save-time)
+// - Optional flags:
+//    --browser-exe "<path>"  Use a specific Chrome/Chromium executable
+//    --discover-timeout <ms> Network capture timeout (default 15000)
+//    --no-browser            Skip stage 3 (useful for debugging)
 
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const YTDLP_OUTPUT_TEMPLATE = "%(title)s.%(ext)s";
+const YTDLP_OUTPUT_TEMPLATE = "%(title).250s.%(ext)s"; // filename truncated at save-time
 
 function parseArgs(argv) {
-  const args = { urls: [], file: null, outDir: process.cwd() };
+  const args = {
+    urls: [],
+    file: null,
+    outDir: process.cwd(),
+    browserExe: null,
+    discoverTimeout: 15000,
+    noBrowser: false,
+  };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--file" || a === "-f") {
       args.file = argv[++i];
     } else if (a === "--out" || a === "-o") {
       args.outDir = path.resolve(argv[++i]);
+    } else if (a === "--browser-exe") {
+      args.browserExe = argv[++i];
+    } else if (a === "--discover-timeout") {
+      args.discoverTimeout = Number(argv[++i]) || args.discoverTimeout;
+    } else if (a === "--no-browser") {
+      args.noBrowser = true;
     } else {
       args.urls.push(a);
     }
@@ -47,8 +69,8 @@ function* iterUrls({ urls, file }) {
   }
 }
 
-// Make a safe folder name from a URL: replace non-alphanumerics with "_"
-function makeSafeDirName(rawUrl) {
+// Sanitize only (no truncation here). Truncation will happen right before saving.
+function makeSanitizedFolderBase(rawUrl) {
   const s = String(rawUrl);
   let name;
   try {
@@ -57,9 +79,11 @@ function makeSafeDirName(rawUrl) {
   } catch {
     name = s;
   }
-  name = name.replace(/[^a-zA-Z0-9]/g, "_"); // non-alphanumeric → "_"
-  name = name.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
-  if (name.length > 100) name = name.slice(0, 100);
+  // Replace any non-alphanumeric with "_"
+  name = name
+    .replace(/[^a-zA-Z0-9]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
   return name || "url";
 }
 
@@ -86,15 +110,122 @@ function runYtDlp(url, cwd, extra = []) {
   });
 }
 
+// Helper: detect master URLs
+function isMasterUrl(u) {
+  // Matches "master.m3u8", "master_1080.m3u8", ".../master?..."
+  return /(^|\/)master([_-][^\/?]+)?\.m3u8(\?|$)/i.test(u);
+}
+
+// --- Stage 3: discover m3u8 via headless browser network capture ---
+// Collect only .m3u8; return masters first, then other m3u8s.
+async function findM3u8ViaBrowser(
+  originalUrl,
+  { browserExe, timeoutMs = 15000 } = {}
+) {
+  let puppeteer;
+  try {
+    puppeteer = require("puppeteer");
+  } catch {
+    console.warn("! Puppeteer is not installed. Run: npm install puppeteer");
+    return [];
+  }
+
+  const launchOpts = {
+    headless: "new",
+    defaultViewport: { width: 1366, height: 768 },
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--mute-audio",
+    ],
+  };
+  if (browserExe) launchOpts.executablePath = browserExe;
+
+  const browser = await puppeteer.launch(launchOpts);
+  const page = await browser.newPage();
+
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+  );
+
+  const masters = new Set();
+  const others = new Set();
+
+  const consider = (u) => {
+    if (!/\.m3u8(\?|$)/i.test(u)) return;
+    if (isMasterUrl(u)) masters.add(u);
+    else others.add(u);
+  };
+
+  // Collect from both requests and responses
+  page.on("request", (req) => {
+    try {
+      consider(req.url());
+    } catch {}
+  });
+  page.on("response", (res) => {
+    try {
+      const u = res.url();
+      const s = res.status();
+      if (s >= 200 && s < 400) consider(u);
+    } catch {}
+  });
+
+  try {
+    const nav = page.goto(originalUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+    const timer = new Promise((r) => setTimeout(r, timeoutMs));
+    await Promise.race([nav.then(() => timer), timer]);
+  } catch (e) {
+    console.warn(`! Navigation error: ${e}`);
+  } finally {
+    await browser.close().catch(() => {});
+  }
+
+  // Build final list: masters first; then others
+  const list = [...masters, ...others];
+
+  if (list.length) {
+    console.log("• Browser discovered .m3u8 candidates (masters first):");
+    for (const c of list.slice(0, 8)) console.log("  -", c);
+    if (list.length > 8) console.log(`  ...(+${list.length - 8} more)`);
+  } else {
+    console.log("• Browser discovered no .m3u8 candidates.");
+  }
+
+  return list;
+}
+
+// Helper: build (and create) a per-URL target directory,
+// truncating folder name to 250 ONLY now (save-time).
+function prepareTargetDir(rootOutDir, rawUrl) {
+  const base = makeSanitizedFolderBase(rawUrl); // no truncation inside
+  const subdirName = base.length > 250 ? base.slice(0, 250) : base; // truncation at save-time
+  const dir = path.join(rootOutDir, subdirName || "url");
+  ensureDir(dir);
+  return dir;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const list = Array.from(iterUrls(args));
 
   if (list.length === 0) {
     console.log("Usage:");
-    console.log("  node src/basic_download.js <url1> <url2> ...");
-    console.log("  node src/basic_download.js --file urls.txt");
-    console.log("  node src/basic_download.js --out downloads --file urls.txt");
+    console.log("  node src/step1_basic_download.js <url1> <url2> ...");
+    console.log("  node src/step1_basic_download.js --file urls.txt");
+    console.log(
+      "  node src/step1_basic_download.js --out downloads --file urls.txt"
+    );
+    console.log(
+      '  [optional] --browser-exe "C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"'
+    );
+    console.log("  [optional] --discover-timeout 20000");
+    console.log("  [optional] --no-browser   # skip stage 3");
     process.exit(2);
   }
 
@@ -104,29 +235,72 @@ async function main() {
     console.log("\n" + "-".repeat(100));
     console.log(`# Processing: ${url}`);
 
-    const subdirName = makeSafeDirName(url);
-    const targetDir = path.join(args.outDir, subdirName);
-    ensureDir(targetDir);
+    // Decide and (if needed) truncate the folder name immediately before saving
+    let targetDir = prepareTargetDir(args.outDir, url);
 
+    // 1) Original
     let code = await runYtDlp(url, targetDir);
     if (code === 0) {
       console.log(`✓ Success. Saved under: ${targetDir}`);
-    } else {
+      continue;
+    }
+
+    // 2) Original with generic extractor
+    console.log(
+      "✗ Original download failed. Retrying with --use-extractors generic ..."
+    );
+    code = await runYtDlp(url, targetDir, ["--use-extractors", "generic"]);
+    if (code === 0) {
       console.log(
-        "✗ Original download failed. Retrying with --use-extractors generic ..."
+        `✓ Success with generic extractor. Saved under: ${targetDir}`
       );
-      code = await runYtDlp(url, targetDir, ["--use-extractors", "generic"]);
-      if (code === 0) {
+      continue;
+    }
+
+    // 3) Browser network discovery (NO generic here)
+    if (args.noBrowser) {
+      console.log("• Skipping browser discovery due to --no-browser flag.");
+      console.log("✗ All attempts failed.");
+      continue;
+    }
+
+    console.log("• Attempting browser-based network discovery for .m3u8 …");
+    const m3u8s = await findM3u8ViaBrowser(url, {
+      browserExe: args.browserExe,
+      timeoutMs: args.discoverTimeout,
+    });
+
+    if (m3u8s.length === 0) {
+      console.log("✗ Download failed; no .m3u8 discovered via browser.");
+      continue;
+    }
+
+    let success = false;
+    for (const m3u8 of m3u8s) {
+      // (re)prepare dir at save-time (same rule, trunc to 250)
+      targetDir = prepareTargetDir(args.outDir, url);
+
+      console.log(`→ Trying discovered media URL (no generic): ${m3u8}`);
+      const c = await runYtDlp(m3u8, targetDir, ["--referer", url]);
+      if (c === 0) {
         console.log(
-          `✓ Success with generic extractor. Saved under: ${targetDir}`
+          `✓ Success from discovered .m3u8. Saved under: ${targetDir}`
         );
+        success = true;
+        break;
       } else {
-        console.log("✗ Download failed even with generic extractor.");
+        console.log("  … failed, trying next candidate …");
       }
+    }
+
+    if (!success) {
+      console.log("✗ All discovered .m3u8 candidates failed.");
     }
   }
 
-  console.log("\nStage 1 (with per-URL folders and fallback) finished.");
+  console.log(
+    "\nStage 1 (per-URL folders, save-time truncation, generic fallback, and network-based m3u8 discovery) finished."
+  );
 }
 
 main().catch((err) => {
