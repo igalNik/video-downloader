@@ -200,6 +200,69 @@ async function findM3u8ViaBrowser(
   return list;
 }
 
+// --- NEW: summarize *.info.json files in a target directory ---
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "unknown";
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function printInfoJsonSummaries(dir) {
+  let files = [];
+  try {
+    files = fs
+      .readdirSync(dir)
+      .filter((f) => f.toLowerCase().endsWith(".info.json"));
+  } catch (e) {
+    console.warn(`(warn) Could not list dir for info JSONs: ${e.message}`);
+    return;
+  }
+
+  if (files.length === 0) {
+    console.log("  (no .info.json found in this folder)");
+    return;
+  }
+
+  console.log("  ─ Info from .info.json ─");
+  for (const f of files) {
+    const full = path.join(dir, f);
+    try {
+      const raw = fs.readFileSync(full, "utf8");
+      const j = JSON.parse(raw);
+
+      const title = j.title || j.fulltitle || "(no title)";
+      const durSec = Number.isFinite(j.duration)
+        ? j.duration
+        : Number(j.duration);
+      const duration =
+        Number.isFinite(durSec) && durSec >= 0
+          ? `${formatDuration(durSec)} (${durSec}s)`
+          : "unknown";
+      const extractor = j.extractor || j.extractor_key || "unknown";
+      const webpage = j.webpage_url || j.original_url || "(n/a)";
+      const uploader =
+        j.uploader || j.channel || j.uploader_id || j.channel_id || "(n/a)";
+      const id = j.id || "(n/a)";
+      const ext = j.ext || "(n/a)";
+
+      console.log(`  • File: ${f}`);
+      console.log(`    Title    : ${title}`);
+      console.log(`    Duration : ${duration}`);
+      console.log(`    Extractor: ${extractor}`);
+      console.log(`    Uploader : ${uploader}`);
+      console.log(`    ID / Ext : ${id} / ${ext}`);
+      console.log(`    Source   : ${webpage}`);
+    } catch (e) {
+      console.warn(`  (warn) Failed to parse ${f}: ${e.message}`);
+    }
+  }
+}
+
 // Helper: build (and create) a per-URL target directory,
 // truncating folder name to 250 ONLY now (save-time).
 function prepareTargetDir(rootOutDir, rawUrl) {
@@ -242,6 +305,7 @@ async function main() {
     let code = await runYtDlp(url, targetDir);
     if (code === 0) {
       console.log(`✓ Success. Saved under: ${targetDir}`);
+      printInfoJsonSummaries(targetDir);
       continue;
     }
 
@@ -254,6 +318,7 @@ async function main() {
       console.log(
         `✓ Success with generic extractor. Saved under: ${targetDir}`
       );
+      printInfoJsonSummaries(targetDir);
       continue;
     }
 
@@ -286,6 +351,7 @@ async function main() {
         console.log(
           `✓ Success from discovered .m3u8. Saved under: ${targetDir}`
         );
+        printInfoJsonSummaries(targetDir);
         success = true;
         break;
       } else {
