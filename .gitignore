@@ -1,0 +1,40 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn.lock
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python venv (if present)
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large media outputs (don’t version control)
+*.mp4
+*.mkv
+*.webm
+*.ts
+*.mp3
+*.m4a
+*.aac
+*.part
+*.ytdl
+*.aria2
+
+# Playlists
+*.m3u8
+*.mpd
+
+# Local inputs
+urls.txt
+
+# Optional: ffprobe outputs (we’ll decide later)
+m3u8-*-info.json

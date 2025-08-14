@@ -1,0 +1,18 @@
+{
+  "name": "video-downloader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stage 1: basic original-URL download via yt-dlp (no fallback yet)",
+  "main": "src/step1_basic_download.js",
+  "scripts": {
+    "start": "node src/step1_basic_download.js",
+    "dl": "node src/step1_basic_download.js --file urls.txt"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}
