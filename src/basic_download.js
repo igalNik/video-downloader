@@ -20,6 +20,9 @@ const { spawn } = require("child_process");
 
 const YTDLP_OUTPUT_TEMPLATE = "%(title).250s.%(ext)s"; // filename truncated at save-time
 
+// --- NEW: in-memory collection for a final summary JSON ---
+const allSummaries = []; // filled from .info.json files we parse
+
 function parseArgs(argv) {
   const args = {
     urls: [],
@@ -200,7 +203,7 @@ async function findM3u8ViaBrowser(
   return list;
 }
 
-// --- NEW: summarize *.info.json files in a target directory ---
+// --- NEW: summarize *.info.json files in a target directory AND collect to final JSON ---
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "unknown";
   const s = Math.floor(seconds);
@@ -212,7 +215,7 @@ function formatDuration(seconds) {
     : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-function printInfoJsonSummaries(dir) {
+function printInfoJsonSummaries(dir, ctx = {}) {
   let files = [];
   try {
     files = fs
@@ -239,9 +242,9 @@ function printInfoJsonSummaries(dir) {
       const durSec = Number.isFinite(j.duration)
         ? j.duration
         : Number(j.duration);
-      const duration =
+      const durationHms =
         Number.isFinite(durSec) && durSec >= 0
-          ? `${formatDuration(durSec)} (${durSec}s)`
+          ? formatDuration(durSec)
           : "unknown";
       const extractor = j.extractor || j.extractor_key || "unknown";
       const webpage = j.webpage_url || j.original_url || "(n/a)";
@@ -249,17 +252,53 @@ function printInfoJsonSummaries(dir) {
         j.uploader || j.channel || j.uploader_id || j.channel_id || "(n/a)";
       const id = j.id || "(n/a)";
       const ext = j.ext || "(n/a)";
+      const originalRequestUrl = ctx.originalUrl || "(n/a)";
 
       console.log(`  • File: ${f}`);
       console.log(`    Title    : ${title}`);
-      console.log(`    Duration : ${duration}`);
+      console.log(
+        `    Duration : ${durationHms}${
+          Number.isFinite(durSec) ? ` (${durSec}s)` : ""
+        }`
+      );
       console.log(`    Extractor: ${extractor}`);
       console.log(`    Uploader : ${uploader}`);
       console.log(`    ID / Ext : ${id} / ${ext}`);
       console.log(`    Source   : ${webpage}`);
+
+      // --- collect into final summary ---
+      allSummaries.push({
+        dir,
+        infoFile: f,
+        title,
+        durationSeconds: Number.isFinite(durSec) ? durSec : null,
+        duration: durationHms,
+        extractor,
+        uploader,
+        id,
+        ext,
+        source: webpage,
+        originalRequestUrl,
+      });
     } catch (e) {
       console.warn(`  (warn) Failed to parse ${f}: ${e.message}`);
     }
+  }
+}
+
+// --- NEW: write the final summary JSON into the root output directory ---
+function writeFinalSummary(outDir) {
+  const summary = {
+    generated_at: new Date().toISOString(),
+    count: allSummaries.length,
+    items: allSummaries,
+  };
+  const outPath = path.join(outDir, "download_summary.json");
+  try {
+    fs.writeFileSync(outPath, JSON.stringify(summary, null, 2), "utf8");
+    console.log(`\n✓ Wrote summary JSON: ${outPath}`);
+  } catch (e) {
+    console.warn(`(warn) Failed to write summary JSON: ${e.message}`);
   }
 }
 
@@ -305,7 +344,7 @@ async function main() {
     let code = await runYtDlp(url, targetDir);
     if (code === 0) {
       console.log(`✓ Success. Saved under: ${targetDir}`);
-      printInfoJsonSummaries(targetDir);
+      printInfoJsonSummaries(targetDir, { originalUrl: url });
       continue;
     }
 
@@ -318,7 +357,7 @@ async function main() {
       console.log(
         `✓ Success with generic extractor. Saved under: ${targetDir}`
       );
-      printInfoJsonSummaries(targetDir);
+      printInfoJsonSummaries(targetDir, { originalUrl: url });
       continue;
     }
 
@@ -351,7 +390,7 @@ async function main() {
         console.log(
           `✓ Success from discovered .m3u8. Saved under: ${targetDir}`
         );
-        printInfoJsonSummaries(targetDir);
+        printInfoJsonSummaries(targetDir, { originalUrl: url });
         success = true;
         break;
       } else {
@@ -364,8 +403,11 @@ async function main() {
     }
   }
 
+  // --- NEW: write one summary file at the end, in the root output directory ---
+  writeFinalSummary(args.outDir);
+
   console.log(
-    "\nStage 1 (per-URL folders, save-time truncation, generic fallback, and network-based m3u8 discovery) finished."
+    "\nStage 1 (per-URL folders, save-time truncation, generic fallback, network-based m3u8 discovery, and final JSON summary) finished."
   );
 }
 
