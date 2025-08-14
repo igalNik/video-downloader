@@ -2,6 +2,10 @@
 
 A modular video downloader application with progressive fallback strategies for downloading videos from various sources.
 
+## 📁 Manual Extraction & Metadata Collection
+
+For videos and metadata collected manually during development, see: [Manual Extraction & Metadata Collection](https://drive.google.com/file/d/1TjfyVOd7B5n39B4sY6MQ3C0teB2gb6cI/view?usp=sharing)
+
 ## Architecture
 
 The application has been refactored into a clean, modular architecture:
@@ -25,11 +29,13 @@ src/
 ## Features
 
 - **Progressive Fallback Strategy:**
+
   1. Try original URL with yt-dlp
   2. Retry with `--use-extractors generic`
   3. Browser-based network discovery for .m3u8 files
 
 - **Smart File Organization:**
+
   - Per-URL subdirectories with sanitized names
   - Automatic truncation to 250 characters at save-time
   - Comprehensive download summaries
@@ -42,27 +48,17 @@ src/
 ## Usage
 
 ### Basic Usage
+
 ```bash
 # Download single URL
 npm start <url>
 
 # Download from file
-npm run dl
+npm start --out downloads --file urls.txt
 
 # Custom output directory
 npm start -- --out downloads <url>
-```
 
-### Advanced Options
-```bash
-# Use specific browser executable
-npm start -- --browser-exe "C:\Program Files\Google\Chrome\Application\chrome.exe" <url>
-
-# Custom discovery timeout
-npm start -- --discover-timeout 20000 <url>
-
-# Skip browser discovery
-npm start -- --no-browser <url>
 ```
 
 ## Dependencies
@@ -74,11 +70,13 @@ npm start -- --no-browser <url>
 ## Installation
 
 1. Install dependencies:
+
    ```bash
    npm install
    ```
 
 2. Install yt-dlp:
+
    ```bash
    pip install yt-dlp
    ```
