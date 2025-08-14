@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Stage 1: basic original-URL download via yt-dlp (no fallback yet)",
-  "main": "src/basic_download.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/basic_download.js",
-    "dl": "node src/basic_download.js --file urls.txt"
+    "start": "node src/index.js",
+    "dl": "node src/index.js --file urls.txt"
   },
   "engines": {
     "node": ">=18"
