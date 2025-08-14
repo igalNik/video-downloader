@@ -1,10 +1,9 @@
-// Stage 1 + output control:
+// step1_basic_download.js
+// Stage 1 with enhancements:
 // - --out <DIR> sets a root output directory.
 // - Each URL is downloaded into its own subdirectory under <DIR>.
-// Usage:
-//   node src/basic_download.js <url1> <url2> ...
-//   node src/basic_download.js --file urls.txt
-//   node src/basic_download.js --out downloads --file urls.txt
+// - Retry with --use-extractors generic if original extraction fails.
+// - Folder names: any non-alphanumeric char replaced with "_".
 
 const fs = require("fs");
 const path = require("path");
@@ -29,7 +28,7 @@ function parseArgs(argv) {
 
 function* iterUrls({ urls, file }) {
   if (file) {
-    const p = path.resolve(file); // cwd implied
+    const p = path.resolve(file);
     if (!fs.existsSync(p)) {
       console.error(`Error: file not found: ${p}`);
       process.exit(1);
@@ -41,33 +40,25 @@ function* iterUrls({ urls, file }) {
       yield t;
     }
   } else {
-    for (const u of urls) yield u;
+    for (const u of urls) {
+      if (!u) continue;
+      yield u;
+    }
   }
 }
 
-// Make a safe folder name from a URL.
-// Example: https://edition.cnn.com/2025/07/16/world/video/...  ->
-//          edition.cnn.com_2025_07_16_world_video
+// Make a safe folder name from a URL: replace non-alphanumerics with "_"
 function makeSafeDirName(rawUrl) {
-  let name = "url";
+  const s = String(rawUrl);
+  let name;
   try {
-    const u = new URL(rawUrl);
-    // Join hostname + pathname; replace separators; collapse repeats
-    name = (u.hostname + u.pathname)
-      .replace(/[/\\]+/g, "_")
-      .replace(/[^a-zA-Z0-9._-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^[-_.]+|[-_.]+$/g, "");
+    const u = new URL(s);
+    name = `${u.hostname}${u.pathname}`;
   } catch {
-    // Fallback: sanitize raw string
-    name = String(rawUrl)
-      .replace(/^https?:\/\//i, "")
-      .replace(/[/\\]+/g, "_")
-      .replace(/[^a-zA-Z0-9._-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^[-_.]+|[-_.]+$/g, "");
+    name = s;
   }
-  // Limit length to avoid OS limits
+  name = name.replace(/[^a-zA-Z0-9]/g, "_"); // non-alphanumeric → "_"
+  name = name.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
   if (name.length > 100) name = name.slice(0, 100);
   return name || "url";
 }
@@ -76,16 +67,16 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function runYtDlp(url, cwd) {
+function runYtDlp(url, cwd, extra = []) {
   const cmd = "python";
-  const args = [
+  const base = [
     "-m",
     "yt_dlp",
     "--write-info-json",
     "-o",
     YTDLP_OUTPUT_TEMPLATE,
-    url,
   ];
+  const args = [...base, ...extra, url];
 
   console.log(`\n$ (cwd=${cwd}) ${cmd} ${args.join(" ")}`);
 
@@ -107,29 +98,35 @@ async function main() {
     process.exit(2);
   }
 
-  // Prepare root output directory
   ensureDir(args.outDir);
 
   for (const url of list) {
     console.log("\n" + "-".repeat(100));
     console.log(`# Processing: ${url}`);
 
-    // Per-URL subdirectory
     const subdirName = makeSafeDirName(url);
     const targetDir = path.join(args.outDir, subdirName);
     ensureDir(targetDir);
 
-    const code = await runYtDlp(url, targetDir);
+    let code = await runYtDlp(url, targetDir);
     if (code === 0) {
       console.log(`✓ Success. Saved under: ${targetDir}`);
     } else {
       console.log(
-        "✗ Download from original URL failed. (Fallback coming in Stage 2.)"
+        "✗ Original download failed. Retrying with --use-extractors generic ..."
       );
+      code = await runYtDlp(url, targetDir, ["--use-extractors", "generic"]);
+      if (code === 0) {
+        console.log(
+          `✓ Success with generic extractor. Saved under: ${targetDir}`
+        );
+      } else {
+        console.log("✗ Download failed even with generic extractor.");
+      }
     }
   }
 
-  console.log("\nStage 1 (with per-URL folders) finished.");
+  console.log("\nStage 1 (with per-URL folders and fallback) finished.");
 }
 
 main().catch((err) => {
